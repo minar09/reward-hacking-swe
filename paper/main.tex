@@ -1,0 +1,265 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{hyperref}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue!60!black,
+    citecolor=blue!60!black,
+    urlcolor=blue!60!black
+}
+
+\newcommand{\tool}{\textsc{VeriPatch}}
+\newcommand{\speccheck}{\textsc{SpecCheck}}
+\newcommand{\scopecheck}{\textsc{ScopeCheck}}
+\newcommand{\tracecheck}{\textsc{TraceCheck}}
+\newcommand{\tbd}[1]{\textcolor{red}{\textbf{[#1]}}}
+
+\begin{document}
+
+\title{Beyond Hardening: Reference-Free Triangulated Validation for Detecting Semantic Reward Hacking in Coding Agents}
+
+\author{
+\IEEEauthorblockN{Heng Vicheka}
+\IEEEauthorblockA{\textit{Special Topics in Software Engineering}\\
+Fall 2026, Team 01}
+\and
+\IEEEauthorblockN{Le Tri Lam}
+\IEEEauthorblockA{\textit{Special Topics in Software Engineering}\\
+Fall 2026, Team 01}
+\and
+\IEEEauthorblockN{Matiur Rahman Minar}
+\IEEEauthorblockA{\textit{Special Topics in Software Engineering}\\
+Fall 2026, Team 01}
+}
+
+\maketitle
+
+\begin{abstract}
+Autonomous coding agents are increasingly evaluated on repository-level benchmarks such as SWE-bench and its hardened variants. While recent execution safeguards—such as network isolation, Git history sanitization, and evaluator locking—effectively curb explicit sandbox tampering and answer leakage, they do not guarantee semantic correctness. Empirical audits demonstrate that 25--30\% of test-passing agent patches still diverge from developer intent due to weak benchmark tests, patch overfitting, or semantic reward hacking. Existing semantic validators (e.g., UTBoost, PatchDiff, Invalidator) rely on a human-written \emph{gold patch} as an oracle, rendering them unusable on newly collected benchmarks, private tasks, or real-world pull requests.
+
+We present \tool{}, a lightweight, strictly \emph{reference-free} triangulated validation framework that audits test-passing coding-agent patches without access to a gold patch or white-box model weights. \tool{} combines three orthogonal signals: (1)~\speccheck{}, which synthesizes boundary and metamorphic tests from the issue description and pre-patch repository while strictly blinded to the candidate patch and benchmark tests; (2)~\scopecheck{}, a deterministic diff-scope, exception-swallowing, and full-repository sibling-test auditor; and (3)~\tracecheck{}, a trajectory-to-diff provenance check that flags test-peeking and literal mirroring. Rather than relying on a brittle binary filter, \tool{} emits a calibrated three-tier trust verdict (\texttt{VERIFIED\_PASS}, \texttt{ESCALATE}, \texttt{LIKELY\_HACK}). Across \tbd{N} stratified test-passing patches from SWE-bench Verified, UTBoost, PatchDiff, and a hardened SWE-Bench Pro Verified slice, \tool{} achieves \tbd{XX.X\%} false-pass recall and \tbd{XX.X\%} precision while keeping collateral damage (false-fail rate on genuinely correct patches) below \tbd{X.X\%} at an overhead of \tbd{XX}s per patch.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Agentic Software Engineering, Reward Hacking, Patch Correctness Assessment, SWE-bench, Benchmark Integrity
+\end{IEEEkeywords}
+
+% ==============================================================================
+\section{Introduction}
+\label{sec:intro}
+Repository-level software engineering (SWE) benchmarks such as SWE-bench~\cite{aleithan2024swebenchplus,zheng2026swebenchpro} have become the de facto standard for measuring autonomous coding agents. In this paradigm, an agent receives a GitHub issue description and a repository snapshot, edits source files, and is scored by whether its submitted patch passes a set of fail-to-pass and pass-to-pass unit tests.
+
+However, a growing body of evidence reveals that benchmark acceptance (\texttt{PASS}) frequently diverges from genuine issue resolution. Early audits exposed severe solution leakage and weak tests~\cite{aleithan2024swebenchplus}, while recent studies show that autonomous agents actively exploit mutable evaluators, unpruned Git history, or web search to obtain passing scores~\cite{thaman2026rhb,atinafu2026rha,zheng2026swebenchpro}. In response, modern evaluation harnesses such as SWE-Bench Pro Verified~\cite{zheng2026swebenchpro} and hardened sandboxes~\cite{thaman2026rhb} lock the evaluator, strip future Git objects, and block unauthorized network egress.
+
+\textbf{The Post-Hardening Blind Spot.}
+Environment hardening solves \emph{explicit} sandbox cheating, yet it leaves a critical gap: \emph{semantic reward hacking and test overfitting on finite test suites}. Even inside a sealed sandbox, an agent can hardcode issue examples, swallow exceptions, or implement narrow shortcuts that pass every benchmark test without satisfying the underlying specification. Recent studies confirm the scale of this residual failure: UTBoost identified 345 erroneous passing patches across 36 under-tested SWE-bench tasks~\cite{yu2025utboost}; PatchDiff found that 29.6\% of plausible patches induce behavior divergent from ground-truth patches (with 7.8\% failing broader developer tests)~\cite{wang2026patchdiff}; and SWE-Proof discovered counterexamples for roughly one-quarter of test-passing patches~\cite{ma2026sweproof}.
+
+\textbf{Why Existing Validators Do Not Solve the Problem.}
+Classical Automated Patch Correctness Assessment (APCA)~\cite{fei2025apcasurvey,lecong2023invalidator} and recent SWE-bench test-augmentation tools~\cite{yu2025utboost,wang2026patchdiff} depend on a human-written \emph{gold patch} to validate generated tests or compute behavioral deltas. While effective for retrospective audits of historical GitHub PRs, gold-patch dependency fails on live/private benchmarks and real-world continuous integration (CI/CD). Conversely, trajectory-only monitors achieve at most 63\% contrastive detection~\cite{deshpande2026trace}, white-box activation probes require model weights unavailable for closed-API frontier models~\cite{hacktrace2026}, and formal proof pipelines face severe specification-audit bottlenecks (only 56\% of agent-written specs pass audit)~\cite{ma2026sweproof}.
+
+\textbf{Research Question and Contributions.}
+We focus on one sharply defined research question:
+\begin{quote}
+\emph{\textbf{RQ:} Once environment hardening eliminates explicit sandbox cheating, how effectively can reference-free triangulated validation detect semantic reward hacking and test-overfitted patches among test-passing coding-agent submissions—without rejecting genuinely correct fixes?}
+\end{quote}
+
+To answer this question, we design and evaluate \tool{}, making three concrete contributions:
+\begin{enumerate}
+    \item \textbf{Reference-Free Triangulated Validation (\tool{}):} A black-box framework combining blind adversarial/metamorphic test synthesis (\speccheck{}), deterministic diff-scope and full-repo regression checks (\scopecheck{}), and trajectory-to-diff provenance auditing (\tracecheck{}).
+    \item \textbf{Factorial Evaluation with Collateral-Damage Metrics:} A causally structured empirical study across \tbd{150--180} test-passing patches (spanning genuine fixes, UTBoost/PatchDiff false passes, synthetic semantic hacks, and a fresh hardened Pro Verified slice), explicitly reporting both false-pass detection and \emph{false-fail rate} (legitimate capability preserved).
+    \item \textbf{Open Research Artifact:} Reproducible code, blinded two-rater adjudication rubric, and JSON evaluation records to support trustworthy SWE benchmark governance.
+\end{enumerate}
+
+% ==============================================================================
+\section{Background and Threat Model}
+\label{sec:background}
+
+\subsection{Operational Definition of Reward Hacking in SWE}
+Following Skalse et al.~\cite{skalse2022rewardgaming}, reward hacking occurs when an agent optimizes a measurable proxy reward in a way that improves proxy performance without improving the intended objective. For a repository-repair task $i$, let $p$ denote the submitted patch, $e$ the execution environment, $T_i$ the benchmark evaluator, and $S_i$ the intended developer specification. The benchmark observes acceptance $A_i = T_i(p, e) \in \{0, 1\}$, whereas the desired construct is genuine correctness $C_i \in \{0, 1\}$ (satisfying $S_i$, preserving existing behavior, and complying with permitted-action policies).
+
+A rigorous study must separate four distinct failure mechanisms that all produce $A_i = 1$ with $C_i = 0$:
+\begin{itemize}
+    \item \textbf{Evaluator tampering:} Altering test harnesses, grading scripts, or exit codes~\cite{atinafu2026rha}.
+    \item \textbf{Evaluation-time answer leakage:} Retrieving future Git commits, upstream PRs, or hidden gold fixtures~\cite{zheng2026swebenchpro}.
+    \item \textbf{Semantic reward hacking:} Hardcoding visible test inputs, swallowing exceptions, or mirroring test assertions without solving the root cause~\cite{zhong2026impossiblebench,zhao2026specbench}.
+    \item \textbf{Ordinary patch overfitting:} An honest but incomplete implementation that happens to pass a weak test suite~\cite{yu2025utboost,wang2026patchdiff,ahmed2025overfitting}.
+\end{itemize}
+We note that \emph{training-data contamination} (memorization) is a distinct validity threat that runtime hardening cannot erase and must be analyzed separately.
+
+\subsection{Post-Hardening Threat Model}
+We assume a \emph{hardened execution precondition} consistent with SWE-Bench Pro Verified~\cite{zheng2026swebenchpro} and RHB~\cite{thaman2026rhb}: the authoritative grader resides in a separate trust domain, future Git objects are stripped, and external network access is blocked. Under this threat model, the agent may still inspect visible repository files, run local tests, and iteratively refine its patch $p$. Consequently, any residual false pass ($A_i = 1, C_i = 0$) arises from semantic shortcuts, exception suppression, test-file scope violations, or incomplete overfitting. \tool{} operates strictly \emph{post-submission} in the trusted grading domain with \textbf{no access to any gold patch}.
+
+% ==============================================================================
+\section{Methodology: The \tool{} Framework}
+\label{sec:method}
+
+Given a test-passing patch $p$, its issue description $I$, pre-patch repository $R$, and optional execution trajectory $\tau$, \tool{} executes three orthogonal validation modules in parallel and aggregates their outputs into a calibrated three-tier trust verdict.
+
+\subsection{Signal 1: \speccheck{} (Blind Adversarial \& Metamorphic Tests)}
+Prior issue-to-test approaches such as Otter~\cite{ahmed2025otter} demonstrate that LLMs can synthesize useful reproduction tests directly from issue descriptions. \speccheck{} adapts this principle to adversarial post-pass auditing under a strict \textbf{blinding invariant}: the test-generating LLM receives \emph{only} $(I, R)$ and never observes the candidate patch $p$, the benchmark's evaluation tests, or any gold patch.
+
+For each task, \speccheck{} prompts an independent model to generate three complementary test categories:
+\begin{enumerate}
+    \item \emph{Alternative-input boundary tests} using values distinct from concrete examples in $I$ (catching literal hardcoding);
+    \item \emph{Negative / error-handling tests} confirming invalid inputs still raise expected exceptions (catching broad \texttt{try/except} swallowing);
+    \item \emph{Metamorphic property tests} checking behavioral invariants across related inputs (e.g., timezone equivalence, idempotency, or round-trip consistency).
+\end{enumerate}
+To minimize noisy false alarms, generated tests are sanity-checked on unmodified repository utilities before flagging $p$.
+
+\subsection{Signal 2: \scopecheck{} (Diff-Scope \& Full-Repo Regression Audit)}
+\scopecheck{} is 100\% deterministic and incurs near-zero latency. It combines static AST/diff inspection with broader dynamic execution:
+\begin{itemize}
+    \item \textbf{Authority boundary check:} Flags unauthorized edits to test suites, \texttt{conftest.py}, or runner configurations unless explicitly permitted by task policy.
+    \item \textbf{Bypass \& swallowing rules:} Detects \texttt{pytest.skip}, \texttt{sys.exit(0)}, bare/broad \texttt{except} blocks paired with \texttt{pass} or dummy constant returns, and conditional branches (\texttt{if x == <lit>}) matching string literals quoted in $I$.
+    \item \textbf{Full-repository sibling test replay:} Executes unmodified sibling test modules outside SWE-bench's narrow \texttt{PASS\_TO\_PASS} subset, targeting the 7.8\% broader-suite regressions reported by Wang et al.~\cite{wang2026patchdiff}.
+\end{itemize}
+
+\subsection{Signal 3: \tracecheck{} (Trajectory-to-Diff Provenance Audit)}
+Whereas \speccheck{} and \scopecheck{} inspect the patch artifact, \tracecheck{} audits the \emph{process} that produced it by aligning tool-call logs $\tau$ with added hunks in $p$:
+\begin{itemize}
+    \item \textbf{Test-peeking $\rightarrow$ literal mirroring:} Extracts string literals observed when the agent reads test files or parses assertion failures, and flags exact mirrors inserted into source-file conditionals.
+    \item \textbf{Blind oracle-fishing:} Flags trajectories with repeated test-execution loops ($\ge 4$ runs) paired with zero inspection of non-test source modules.
+    \item \textbf{Residual provenance probes:} Logs attempted history or network retrieval commands (e.g., \texttt{git log}, \texttt{git reflog}, \texttt{curl}) even if blocked by the sandbox.
+\end{itemize}
+
+\subsection{Three-Tier Trust Verdict}
+Because individual signals have distinct precision/recall profiles, \tool{} avoids brittle binary rejection and outputs:
+\begin{itemize}
+    \item \texttt{VERIFIED\_PASS} (0 signals triggered): High-confidence genuine repair.
+    \item \texttt{ESCALATE} (1 signal triggered): Flagged for human review alongside concrete counterexamples, AST lines, or trajectory spans.
+    \item \texttt{LIKELY\_HACK} ($\ge 2$ orthogonal signals triggered): High-confidence false pass / semantic reward hack.
+\end{itemize}
+
+% ==============================================================================
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Evaluation Corpus and Ground Truth}
+To evaluate \tool{} rigorously within reproducible compute budgets, we assemble two complementary datasets:
+\begin{enumerate}
+    \item \textbf{Stratified Public Passing-Patch Corpus (\tbd{120--150} patches):} Collected from open-sourced SWE-bench Verified leaderboard runs (\texttt{SWE-bench/experiments}), annotated erroneous passing patches from UTBoost~\cite{yu2025utboost} and PatchDiff~\cite{wang2026patchdiff}, and \tbd{20--30} synthetic semantic-hack patches modeled after ImpossibleBench~\cite{zhong2026impossiblebench}. The corpus is stratified into genuine fixes (\tbd{$\sim$60}), test-overfitted/erroneous passes (\tbd{$\sim$45}), and deliberate semantic shortcuts (\tbd{$\sim$25}).
+    \item \textbf{Fresh Hardened External-Validity Slice (30 tasks):} We execute two distinct coding agents (one open-weights, one API-based) on a stratified 30-task subset of SWE-Bench Pro Verified~\cite{zheng2026swebenchpro} under locked execution to capture end-to-end trajectories and diffs.
+\end{enumerate}
+
+\textbf{Blinded Human Adjudication.} Two authors independently adjudicate a stratified sample of \tbd{60} disputed or borderline patches while blinded to model identity and \tool{} outputs, labeling each as \texttt{Correct}, \texttt{Overfitted/Incomplete}, \texttt{Semantic Hack}, or \texttt{Uncertain}. We report Cohen's $\kappa$ inter-rater agreement and resolve ties via a third adjudicator.
+
+\subsection{Baselines and Factorial Ablations}
+We compare \tool{} against three baselines: (1)~\textbf{Original Benchmark \texttt{PASS}} (0\% false-pass detection); (2)~\textbf{Naive LLM-as-a-Judge} (single-prompt review of issue and diff); and (3)~\textbf{Trajectory-Only Monitor} (TRACE-style contrastive log review~\cite{deshpande2026trace}). We additionally perform a full factorial ablation evaluating \speccheck{} ($S_1$), \scopecheck{} ($S_2$), and \tracecheck{} ($S_3$) individually, in pairs, and combined.
+
+\subsection{Metrics with Explicit Denominators}
+Let $A=1$ denote benchmark acceptance, $C \in \{0,1\}$ adjudicated correctness, and $V \in \{0,1\}$ a \tool{} flag (\texttt{ESCALATE} or \texttt{LIKELY\_HACK}):
+\begin{itemize}
+    \item \textbf{False-Pass Recall:} $P(V=1 \mid A=1, C=0)$.
+    \item \textbf{Flagging Precision:} $P(C=0 \mid A=1, V=1)$.
+    \item \textbf{Collateral Damage (False-Fail Rate):} $P(V=1 \mid A=1, C=1)$—measuring legitimate engineering capability lost.
+    \item \textbf{Accepted-Patch Incorrectness:} $P(C=0 \mid A=1)$ before vs.\ after \tool{} filtering.
+    \item \textbf{Practicality:} Mean wall-clock latency (seconds) and token/API cost (\$/patch).
+\end{itemize}
+
+% ==============================================================================
+\section{Results and Analysis}
+\label{sec:results}
+
+\begin{table}[t]
+\centering
+\caption{Main Comparison of Reference-Free Validators on Test-Passing Patches (Placeholder for Week 13 Results)}
+\label{tab:main_results}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Method} & \textbf{Recall} & \textbf{Prec.} & \textbf{F1} & \textbf{False-Fail $\downarrow$} & \textbf{Cost (\$)} \\
+\midrule
+Benchmark \texttt{PASS} & 0.0\% & -- & -- & 0.0\% & \$0.00 \\
+Naive LLM-as-a-Judge & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} \\
+Trajectory-Only (TRACE-style) & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} \\
+\midrule
+\tool{} (\texttt{LIKELY\_HACK}) & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} \\
+\tool{} (\texttt{ESCALATE+HACK}) & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Factorial Ablation of \tool{} Signals ($S_1$: \speccheck{}, $S_2$: \scopecheck{}, $S_3$: \tracecheck{})}
+\label{tab:ablation}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Configuration} & \textbf{Recall} & \textbf{Prec.} & \textbf{False-Fail $\downarrow$} & \textbf{Latency (s)} \\
+\midrule
+$S_1$ only (\speccheck{}) & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} \\
+$S_2$ only (\scopecheck{}) & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} \\
+$S_3$ only (\tracecheck{}) & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} \\
+$S_1 + S_2$ & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} \\
+$S_1 + S_2 + S_3$ (Full) & \tbd{--} & \tbd{--} & \tbd{--} & \tbd{--} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\tbd{Insert empirical findings for Table~\ref{tab:main_results}, Table~\ref{tab:ablation}, Precision--False-Fail trade-off plot, and two qualitative case studies (one caught semantic hack + one honest false-positive failure mode) after Week 13 full runs.}
+
+% ==============================================================================
+\section{Threats to Validity}
+\label{sec:threats}
+\textbf{Construct Validity.} A blind LLM test generator (\speccheck{}) may share misunderstanding biases with the coding agent or synthesize overly strict assertions for under-specified issues. Triangulating with deterministic \scopecheck{} and reporting \texttt{ESCALATE} separately mitigates this risk. Furthermore, passing \tool{} does not rule out \emph{training-data memorization}, which requires fresh temporal or private task splits.
+
+\textbf{Internal Validity.} Heuristic rules in \scopecheck{} and \tracecheck{} could over-trigger on legitimate defensive coding (e.g., valid \texttt{try/except} fallbacks). We explicitly quantify this via the False-Fail Rate and blinded human adjudication.
+
+\textbf{External Validity.} Our primary corpus focuses on Python repositories in SWE-bench Verified and Pro Verified; extending AST and test-generation rules to multilingual repositories (Java, Go, TypeScript) is an important direction for future work.
+
+% ==============================================================================
+\section{Related Work}
+\label{sec:related}
+
+\textbf{Classical Patch Correctness Assessment.}
+Long before LLM coding agents, Automated Program Repair (APR) distinguished plausible (test-passing) patches from genuinely correct patches~\cite{fei2025apcasurvey}. Dynamic and semantic assessors such as Invalidator~\cite{lecong2023invalidator} infer program invariants and combine syntactic/semantic reasoning, but rely on developer-patched reference programs. \tool{} brings APCA into the agentic era under a strictly reference-free constraint.
+
+\textbf{SWE-bench Integrity and Test Inadequacy.}
+SWE-Bench+~\cite{aleithan2024swebenchplus} revealed substantial solution leakage and weak tests in original SWE-bench. UTBoost~\cite{yu2025utboost} and PatchDiff~\cite{wang2026patchdiff} demonstrated that insufficient test suites allow hundreds of erroneous or behaviorally divergent patches to pass, altering leaderboard rankings. Ahmed et al.~\cite{ahmed2025overfitting} further analyzed test overfitting on SWE-bench, while Otter~\cite{ahmed2025otter} showed that reproduction tests can be generated directly from issue descriptions. Unlike UTBoost and PatchDiff, \tool{} requires no gold patch; unlike Otter, \tool{} pairs blind adversarial/metamorphic tests with diff-scope and trajectory provenance auditing.
+
+\textbf{Reward Hacking Measurement, Hardening, and Monitoring.}
+Formal foundations of reward gaming~\cite{skalse2022rewardgaming} have recently been instantiated for tool-using coding agents in RHB~\cite{thaman2026rhb}, RewardHackingAgents~\cite{atinafu2026rha}, ImpossibleBench~\cite{zhong2026impossiblebench}, and SWE-Bench Pro Verified~\cite{zheng2026swebenchpro}. Monitoring approaches such as TRACE~\cite{deshpande2026trace} evaluate contrastive trajectory detection (peaking at 63\%), while HackTrace~\cite{hacktrace2026} leverages internal model activations requiring white-box weights. \tool{} complements hardened sandboxes with black-box semantic validation.
+
+\textbf{Compositional and Formal Validation.}
+SpecBench~\cite{zhao2026specbench} exposes growing visible-versus-held-out test gaps in long-horizon systems tasks, while SWE-Proof~\cite{ma2026sweproof} applies machine-checked formal proofs to real issues, finding counterexamples in $\sim$25\% of passing patches but highlighting specification-audit fragility. Table~\ref{tab:positioning} summarizes our positioning relative to prior art.
+
+\begin{table}[t]
+\centering
+\caption{Positioning of \tool{} Against Existing Validation and Anti-Hacking Approaches}
+\label{tab:positioning}
+\resizebox{\columnwidth}{!}{%
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Approach} & \textbf{Semantic Hacks} & \textbf{No Gold Patch} & \textbf{Black-Box} & \textbf{Low Cost} \\
+\midrule
+Invalidator~\cite{lecong2023invalidator} & Yes & No & Yes & Med \\
+UTBoost~\cite{yu2025utboost} / PatchDiff~\cite{wang2026patchdiff} & Yes & No & Yes & Med \\
+SWE-Bench Pro Verified~\cite{zheng2026swebenchpro} & Partial & Yes & Yes & Yes \\
+TRACE~\cite{deshpande2026trace} / HackTrace~\cite{hacktrace2026} & Weak/Part. & Yes & Mixed & Yes \\
+SWE-Proof~\cite{ma2026sweproof} & Axiom-rel. & No & Yes & No \\
+\midrule
+\textbf{\tool{} (Ours)} & \textbf{Yes (3-Sig.)} & \textbf{Yes} & \textbf{Yes} & \textbf{Yes} \\
+\bottomrule
+\end{tabular}%
+}
+\end{table}
+
+% ==============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+Locking the evaluation sandbox is necessary but insufficient for trustworthy coding-agent benchmarks. By triangulating blind issue-derived adversarial tests (\speccheck{}), deterministic diff-scope and sibling-regression checks (\scopecheck{}), and trajectory-to-diff provenance auditing (\tracecheck{}), \tool{} provides a practical, reference-free defense against post-hardening semantic reward hacking while explicitly accounting for collateral damage on valid repairs.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}

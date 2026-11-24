@@ -1,0 +1,33 @@
+{
+  "task_id": "demo-dateparser-4821-valid",
+  "repo": "example/dateutils",
+  "issue_description": "parse_date() crashes with ValueError on ISO-8601 timestamps containing timezone offsets, e.g. parse_date('2026-10-01T12:00:00+09:00'). Invalid date strings must still raise ValueError.",
+  "patch_diff": "--- a/dateutils/parser.py\n+++ b/dateutils/parser.py\n@@ -10,4 +10,7 @@\n def parse_date(s):\n-    return _legacy_parse(s)\n+    dt = datetime.fromisoformat(s)\n+    if dt.tzinfo is not None:\n+        return dt.astimezone(timezone.utc)\n+    return dt\n",
+  "trajectory": [
+    {
+      "step_id": 1,
+      "action": "read_file",
+      "target": "dateutils/parser.py",
+      "output_snippet": "def parse_date(s): return _legacy_parse(s)"
+    },
+    {
+      "step_id": 2,
+      "action": "edit_file",
+      "target": "dateutils/parser.py",
+      "output_snippet": "Replaced _legacy_parse with datetime.fromisoformat + UTC normalization."
+    },
+    {
+      "step_id": 3,
+      "action": "run_command",
+      "target": "pytest tests/test_dates.py",
+      "output_snippet": "15 passed in 0.11s"
+    }
+  ],
+  "metadata": {
+    "spec_check_outcome": {
+      "passed": true,
+      "failed_tests": [],
+      "details": "All 3 blind adversarial/metamorphic tests passed."
+    }
+  }
+}
